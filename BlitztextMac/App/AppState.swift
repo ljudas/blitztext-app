@@ -54,13 +54,16 @@ final class AppState {
     var emojiTextSettings: EmojiTextSettings {
         didSet { saveSettings() }
     }
+    var providerSettings: ProviderSettings {
+        didSet { saveSettings() }
+    }
 
     // Hotkeys
     let hotkeyService = HotkeyService()
 
     // Computed
     var isConfigured: Bool {
-        KeychainService.isConfigured || !LocalTranscriptionService.installedModels().isEmpty
+        KeychainService.hasKey(for: providerSettings.activeProvider) || !LocalTranscriptionService.installedModels().isEmpty
     }
     var shouldShowOnboarding: Bool {
         !isConfigured && !appSettings.hasSeenOnboarding
@@ -76,6 +79,7 @@ final class AppState {
         self.textImprovementSettings = Self.loadTextImprovementSettings()
         self.dampfAblassenSettings = Self.loadDampfAblassenSettings()
         self.emojiTextSettings = Self.loadEmojiTextSettings()
+        self.providerSettings = Self.loadProviderSettings()
         refreshAccessibilityPermission()
         autoSelectFastLocalModelIfNeeded()
         prewarmLocalTranscriptionIfNeeded()
@@ -108,7 +112,7 @@ final class AppState {
                     ? "Lokal: \(LocalTranscriptionModel.displayName(for: modelName))."
                     : "Lokales WhisperKit-Modell fehlt."
             }
-            return "Online: Whisper über OpenAI."
+            return "Online: Whisper über \(providerSettings.activeProvider.displayName)."
         case .localTranscription:
             return "Nur lokal. Kein Server."
         case .textImprover, .dampfAblassen, .emojiText:
@@ -161,13 +165,18 @@ final class AppState {
         activeLaunchSource = source
         activePasteTarget = capturePasteTarget(for: source)
 
+        let providerConfig = providerSettings.resolvedConfig(
+            apiKey: KeychainService.load(key: KeychainService.key(for: providerSettings.activeProvider))
+        )
+
         switch type {
         case .transcription:
             let workflow = TranscriptionWorkflow(
                 customTerms: textImprovementSettings.customTerms,
                 language: transcriptionSettings.language,
                 backend: appSettings.secureLocalModeEnabled ? .local : .remote,
-                localModelName: selectedLocalModelName
+                localModelName: selectedLocalModelName,
+                config: providerConfig
             )
             configureWorkflowHandlers(workflow)
             activeWorkflow = workflow
@@ -179,7 +188,8 @@ final class AppState {
                 customTerms: textImprovementSettings.customTerms,
                 language: transcriptionSettings.language,
                 backend: .local,
-                localModelName: selectedLocalModelName
+                localModelName: selectedLocalModelName,
+                config: providerConfig
             )
             configureWorkflowHandlers(workflow)
             activeWorkflow = workflow
@@ -188,7 +198,8 @@ final class AppState {
         case .textImprover:
             let workflow = TextImprovementWorkflow(
                 settings: textImprovementSettings,
-                language: transcriptionSettings.language
+                language: transcriptionSettings.language,
+                config: providerConfig
             )
             configureWorkflowHandlers(workflow)
             activeWorkflow = workflow
@@ -198,7 +209,8 @@ final class AppState {
             let workflow = DampfAblassenWorkflow(
                 settings: dampfAblassenSettings,
                 customTerms: textImprovementSettings.customTerms,
-                language: transcriptionSettings.language
+                language: transcriptionSettings.language,
+                config: providerConfig
             )
             configureWorkflowHandlers(workflow)
             activeWorkflow = workflow
@@ -208,7 +220,8 @@ final class AppState {
             let workflow = EmojiTextWorkflow(
                 settings: emojiTextSettings,
                 customTerms: textImprovementSettings.customTerms,
-                language: transcriptionSettings.language
+                language: transcriptionSettings.language,
+                config: providerConfig
             )
             configureWorkflowHandlers(workflow)
             activeWorkflow = workflow
@@ -225,9 +238,9 @@ final class AppState {
         case .transcription:
             return appSettings.secureLocalModeEnabled
                 ? selectedLocalModelIsInstalled
-                : KeychainService.isConfigured
+                : KeychainService.hasKey(for: providerSettings.activeProvider)
         case .textImprover, .dampfAblassen, .emojiText:
-            return !appSettings.secureLocalModeEnabled && KeychainService.isConfigured
+            return !appSettings.secureLocalModeEnabled && KeychainService.hasKey(for: providerSettings.activeProvider)
         }
     }
 
@@ -375,7 +388,8 @@ final class AppState {
             transcription: transcriptionSettings,
             textImprovement: textImprovementSettings,
             dampfAblassen: dampfAblassenSettings,
-            emojiText: emojiTextSettings
+            emojiText: emojiTextSettings,
+            provider: providerSettings
         )
         if let data = try? JSONEncoder().encode(container) {
             try? data.write(to: Self.settingsURL)
@@ -400,6 +414,10 @@ final class AppState {
 
     private static func loadEmojiTextSettings() -> EmojiTextSettings {
         loadContainer()?.emojiText ?? EmojiTextSettings()
+    }
+
+    private static func loadProviderSettings() -> ProviderSettings {
+        loadContainer()?.provider ?? ProviderSettings()
     }
 
     private static func loadContainer() -> SettingsContainer? {
@@ -603,6 +621,7 @@ private struct SettingsContainer: Codable {
     var textImprovement: TextImprovementSettings
     var dampfAblassen: DampfAblassenSettings?
     var emojiText: EmojiTextSettings?
+    var provider: ProviderSettings?
 }
 
 // MARK: - Notification for Popover Dismissal

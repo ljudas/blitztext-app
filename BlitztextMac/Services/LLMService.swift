@@ -9,20 +9,21 @@ enum LLMError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notConfigured:
-            return "OpenAI API Key fehlt. Bitte in den Einstellungen hinterlegen."
+            return "API-Key oder Endpoint fehlt. Bitte in den Einstellungen hinterlegen."
         case .networkError(let msg):
             return "Verbindungsproblem: \(msg)"
         case .apiError(let msg):
-            return "Fehler von OpenAI: \(msg)"
+            return "Anbieter-Fehler: \(msg)"
         case .noContent:
             return "Keine Antwort erhalten. Bitte nochmal versuchen."
         }
     }
 }
 
-enum RewriteModel: String {
-    case fastEdit = "gpt-4o-mini"
-    case rageMode = "gpt-4o"
+/// Pure tier identifier. The concrete model name comes from `ProviderConfig`.
+enum RewriteModel {
+    case fastEdit
+    case rageMode
 }
 
 private struct OpenAIChatRequest: Encodable {
@@ -57,8 +58,6 @@ private struct OpenAIErrorResponse: Decodable {
 }
 
 enum LLMService {
-    private static let chatCompletionsURL = URL(string: "https://api.openai.com/v1/chat/completions")!
-
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
@@ -71,39 +70,45 @@ enum LLMService {
     static func improve(
         text: String,
         settings: TextImprovementSettings,
+        config: ProviderConfig,
         model: RewriteModel = .fastEdit
     ) async throws -> String {
         try await complete(
             text: text,
             systemPrompt: buildSystemPrompt(settings: settings),
             model: model,
-            temperature: 0.3
+            temperature: 0.3,
+            config: config
         )
     }
 
     static func dampfAblassen(
         text: String,
         systemPrompt: String,
+        config: ProviderConfig,
         model: RewriteModel = .rageMode
     ) async throws -> String {
         try await complete(
             text: text,
             systemPrompt: systemPrompt,
             model: model,
-            temperature: 0.4
+            temperature: 0.4,
+            config: config
         )
     }
 
     static func addEmojis(
         text: String,
         settings: EmojiTextSettings,
+        config: ProviderConfig,
         model: RewriteModel = .fastEdit
     ) async throws -> String {
         try await complete(
             text: text,
             systemPrompt: buildEmojiSystemPrompt(density: settings.emojiDensity),
             model: model,
-            temperature: 0.3
+            temperature: 0.3,
+            config: config
         )
     }
 
@@ -111,14 +116,20 @@ enum LLMService {
         text: String,
         systemPrompt: String,
         model: RewriteModel,
-        temperature: Double
+        temperature: Double,
+        config: ProviderConfig
     ) async throws -> String {
-        guard let apiKey = KeychainService.load(key: .openAIAPIKey) else {
+        guard let apiKey = config.apiKey, let chatCompletionsURL = config.chatCompletionsURL else {
             throw LLMError.notConfigured
         }
 
+        let modelName = model == .fastEdit ? config.chatModelLight : config.chatModelHeavy
+        guard !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LLMError.apiError("Kein Chat-Modell konfiguriert. Bitte in den Einstellungen hinterlegen.")
+        }
+
         let payload = OpenAIChatRequest(
-            model: model.rawValue,
+            model: modelName,
             messages: [
                 .init(role: "system", content: systemPrompt),
                 .init(role: "user", content: text),

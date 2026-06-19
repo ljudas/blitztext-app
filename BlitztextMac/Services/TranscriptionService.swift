@@ -11,11 +11,11 @@ enum TranscriptionError: LocalizedError {
         case .noFile:
             return "Keine Audio-Datei gefunden"
         case .notConfigured:
-            return "OpenAI API Key fehlt. Bitte in den Einstellungen hinterlegen."
+            return "API-Key oder Endpoint fehlt. Bitte in den Einstellungen hinterlegen."
         case .networkError(let msg):
             return "Netzwerkfehler: \(msg)"
         case .apiError(let msg):
-            return "OpenAI-Fehler: \(msg)"
+            return "Anbieter-Fehler: \(msg)"
         }
     }
 }
@@ -28,10 +28,11 @@ private struct TranscriptionOpenAIErrorResponse: Decodable {
     let error: APIError?
 }
 
-enum TranscriptionService {
-    private static let remoteModel = "whisper-1"
-    private static let transcriptionsURL = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
+private struct TranscriptionTextResponse: Decodable {
+    let text: String
+}
 
+enum TranscriptionService {
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
@@ -43,12 +44,14 @@ enum TranscriptionService {
 
     static func transcribe(
         audioURL: URL,
+        config: ProviderConfig,
         customTerms: [String] = [],
         language: String? = nil
     ) async throws -> String {
-        guard let apiKey = KeychainService.load(key: .openAIAPIKey) else {
+        guard let apiKey = config.apiKey, let transcriptionsURL = config.transcriptionsURL else {
             throw TranscriptionError.notConfigured
         }
+        let transcriptionModel = config.transcriptionModel
 
         return try await Task.detached(priority: .userInitiated) {
             defer {
@@ -68,19 +71,19 @@ enum TranscriptionService {
 
             var body = Data()
             body.append("--\(boundary)\r\n")
-            body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n")
-            body.append("Content-Type: audio/m4a\r\n\r\n")
+            body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
+            body.append("Content-Type: audio/wav\r\n\r\n")
             body.append(audioData)
             body.append("\r\n")
 
             body.append("--\(boundary)\r\n")
             body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
-            body.append(remoteModel)
+            body.append(transcriptionModel)
             body.append("\r\n")
 
             body.append("--\(boundary)\r\n")
             body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
-            body.append("text")
+            body.append("json")
             body.append("\r\n")
 
             if !customTerms.isEmpty {
@@ -111,13 +114,21 @@ enum TranscriptionService {
                 throw TranscriptionError.apiError(openAIErrorMessage(from: data) ?? "Status \(httpResponse.statusCode)")
             }
 
-            guard let text = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty else {
+            let transcript: String
+            if let decoded = try? JSONDecoder().decode(TranscriptionTextResponse.self, from: data) {
+                // OpenAI-kompatible Provider liefern { "text": "..." }
+                transcript = decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                // Fallback: Provider hat plain text geliefert
+                transcript = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            }
+
+            guard !transcript.isEmpty else {
                 throw TranscriptionError.apiError("Transkription fehlgeschlagen")
             }
 
-            return text
+            return transcript
         }.value
     }
 

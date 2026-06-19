@@ -16,12 +16,14 @@ final class EmojiTextWorkflow: Workflow {
     private let settings: EmojiTextSettings
     private let customTerms: [String]
     private let language: String
+    private let config: ProviderConfig
     private var processingTask: Task<Void, Never>?
 
-    init(settings: EmojiTextSettings, customTerms: [String] = [], language: String = "de") {
+    init(settings: EmojiTextSettings, customTerms: [String] = [], language: String = "de", config: ProviderConfig) {
         self.settings = settings
         self.customTerms = customTerms
         self.language = language
+        self.config = config
     }
 
     // MARK: - Recording State
@@ -85,6 +87,7 @@ final class EmojiTextWorkflow: Workflow {
                 // Phase 1: Whisper transcription
                 let rawText = try await TranscriptionService.transcribe(
                     audioURL: url,
+                    config: config,
                     customTerms: vocabularyHints,
                     language: language
                 )
@@ -101,7 +104,8 @@ final class EmojiTextWorkflow: Workflow {
 
                 let result = try await LLMService.addEmojis(
                     text: cleanedRawText,
-                    settings: settings
+                    settings: settings,
+                    config: config
                 )
                 let cleanedResult = TranscriptionQualityService.cleanedTranscript(result)
                 guard cleanedResult != "KEINE_AUFNAHME_ERKANNT" else {

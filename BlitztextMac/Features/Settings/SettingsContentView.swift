@@ -77,6 +77,109 @@ struct AccessSettingsView: View {
     @State private var cleanupErrorText: String?
     @FocusState private var focusedField: FieldFocus?
 
+    private var activeProvider: APIProvider { appState.providerSettings.activeProvider }
+    private var activeKey: KeychainKey { KeychainService.key(for: activeProvider) }
+
+    private enum EngineChoice: Hashable {
+        case local, openai, scaleway, custom
+    }
+
+    private var isLocalEngine: Bool { appState.appSettings.secureLocalModeEnabled }
+
+    // Ein einziger Schalter: genau eine Engine aktiv. Schreibt auf die zwei
+    // bestehenden Stellen (Lokal-Flag bzw. aktiver Remote-Anbieter).
+    private var engineChoice: Binding<EngineChoice> {
+        Binding(
+            get: {
+                if appState.appSettings.secureLocalModeEnabled { return .local }
+                switch appState.providerSettings.activeProvider {
+                case .openai: return .openai
+                case .scaleway: return .scaleway
+                case .custom: return .custom
+                }
+            },
+            set: { choice in
+                switch choice {
+                case .local:
+                    appState.enableSecureLocalMode()
+                case .openai:
+                    appState.appSettings.secureLocalModeEnabled = false
+                    appState.providerSettings.activeProvider = .openai
+                case .scaleway:
+                    appState.appSettings.secureLocalModeEnabled = false
+                    appState.providerSettings.activeProvider = .scaleway
+                case .custom:
+                    appState.appSettings.secureLocalModeEnabled = false
+                    appState.providerSettings.activeProvider = .custom
+                }
+            }
+        )
+    }
+
+    private var installedLocalModels: [LocalTranscriptionModel] {
+        LocalTranscriptionService.installedModels()
+    }
+
+    private var localModelOptions: [LocalTranscriptionModel] {
+        LocalTranscriptionService.modelOptions()
+    }
+
+    @ViewBuilder
+    private var localModelSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionLabel(text: "Lokales Modell")
+
+            HStack(spacing: 6) {
+                Image(systemName: appState.selectedLocalModelIsInstalled ? "checkmark.circle.fill" : "arrow.down.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(appState.selectedLocalModelIsInstalled ? .green : .blue)
+                Text(appState.selectedLocalModelIsInstalled ? "\(installedLocalModels.count) lokales WhisperKit-Modell installiert." : "Das ausgewählte Modell wird beim Installieren lokal gespeichert.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            Picker("", selection: Binding(
+                get: { appState.selectedLocalModelName },
+                set: { appState.appSettings.selectedLocalTranscriptionModelName = $0 }
+            )) {
+                ForEach(localModelOptions) { model in
+                    Text("\(model.displayName) · \(model.installStateLabel)").tag(model.id)
+                }
+            }
+            .labelsHidden()
+            .controlSize(.small)
+            .disabled(appState.isDownloadingLocalModel)
+
+            if let progress = appState.localModelDownloadProgress {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: progress)
+                    Text(appState.localModelDownloadStatusText ?? "Modell wird geladen...")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                HStack(spacing: 10) {
+                    Button(appState.localModelDownloadButtonTitle) {
+                        appState.installSelectedLocalModel()
+                    }
+                    .controlSize(.small)
+                    .disabled(appState.selectedLocalModelIsInstalled)
+
+                    Link("Modellseite", destination: LocalTranscriptionService.modelPageURL(for: appState.selectedLocalModelName))
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+            }
+
+            if let errorText = appState.localModelDownloadErrorText {
+                Text(errorText)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 8) {
@@ -114,50 +217,102 @@ struct AccessSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    SectionLabel(text: "OpenAI API Key")
-                    Spacer()
-                    if appState.hasValue(for: .openAIAPIKey) && !editingAPIKey {
-                        Button("Aendern") { editingAPIKey = true }
-                            .font(.system(size: 10, weight: .medium))
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.blue)
-                    }
+                SectionLabel(text: "Aktive Engine")
+
+                Picker("", selection: engineChoice) {
+                    Text("Lokal").tag(EngineChoice.local)
+                    Text("OpenAI").tag(EngineChoice.openai)
+                    Text("Scaleway").tag(EngineChoice.scaleway)
+                    Text("Eigener").tag(EngineChoice.custom)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: appState.providerSettings.activeProvider) { _, newProvider in
+                    openAIAPIKey = ""
+                    saveErrorText = nil
+                    editingAPIKey = !appState.hasValue(for: KeychainService.key(for: newProvider))
                 }
 
-                if appState.hasValue(for: .openAIAPIKey) && !editingAPIKey {
-                    HStack(spacing: 6) {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.green.opacity(0.8))
-                        Text(appState.apiKeyDisplayValue(for: .openAIAPIKey))
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                } else {
-                    HStack(spacing: 8) {
-                        SecureField("sk-...", text: $openAIAPIKey)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11.5))
-                            .focused($focusedField, equals: .openAIAPIKey)
-
-                        Button("Einfuegen") {
-                            pasteAPIKeyFromClipboard()
-                        }
-                        .buttonStyle(SubtleButtonStyle())
-                    }
-                }
-
-                Text("Dein Key bleibt lokal in dieser App. Audio und Text werden direkt an die OpenAI API gesendet.")
+                Text("Genau eine Engine ist aktiv – sie wird fürs Diktieren und für die Umformulierungen verwendet.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if isLocalEngine {
+                localModelSection
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        SectionLabel(text: "API-Key (\(activeProvider.displayName))")
+                        Spacer()
+                        if appState.hasValue(for: activeKey) && !editingAPIKey {
+                            Button("Aendern") { editingAPIKey = true }
+                                .font(.system(size: 10, weight: .medium))
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.blue)
+                        }
+                    }
+
+                    if appState.hasValue(for: activeKey) && !editingAPIKey {
+                        HStack(spacing: 6) {
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.green.opacity(0.8))
+                            Text(appState.apiKeyDisplayValue(for: activeKey))
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                        )
+                    } else {
+                        HStack(spacing: 8) {
+                            SecureField(activeProvider == .openai ? "sk-..." : "API-Key", text: $openAIAPIKey)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 11.5))
+                                .focused($focusedField, equals: .openAIAPIKey)
+
+                            Button("Einfuegen") {
+                                pasteAPIKeyFromClipboard()
+                            }
+                            .buttonStyle(SubtleButtonStyle())
+                        }
+                    }
+
+                    Text(keyHint)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if activeProvider == .scaleway {
+                    settingsTextField(
+                        label: "Chat-Modell",
+                        placeholder: "z.B. llama-3.3-70b-instruct",
+                        text: $appState.providerSettings.scalewayChatModel
+                    )
+                }
+
+                if activeProvider == .custom {
+                    settingsTextField(
+                        label: "Base-URL",
+                        placeholder: "z.B. https://host/v1",
+                        text: $appState.providerSettings.customBaseURL
+                    )
+                    settingsTextField(
+                        label: "Transkriptions-Modell",
+                        placeholder: "z.B. whisper-large-v3",
+                        text: $appState.providerSettings.customTranscriptionModel
+                    )
+                    settingsTextField(
+                        label: "Chat-Modell",
+                        placeholder: "z.B. gpt-4o-mini",
+                        text: $appState.providerSettings.customChatModel
+                    )
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -330,28 +485,30 @@ struct AccessSettingsView: View {
                 }
             }
 
-            // Save button (right-aligned, text only)
-            HStack {
-                Spacer()
-                Button {
-                    save()
-                } label: {
-                    if saved {
-                        HStack(spacing: 4) {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 10, weight: .bold))
-                            Text("Gespeichert")
-                        }
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.green)
-                    } else {
-                        Text("Speichern")
+            // Save button (right-aligned, text only) – nur relevant für Remote-Key
+            if !isLocalEngine {
+                HStack {
+                    Spacer()
+                    Button {
+                        save()
+                    } label: {
+                        if saved {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                Text("Gespeichert")
+                            }
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(.green)
+                        } else {
+                            Text("Speichern")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.blue)
+                        }
                     }
+                    .buttonStyle(SubtleButtonStyle())
+                    .animation(.easeInOut(duration: 0.2), value: saved)
                 }
-                .buttonStyle(SubtleButtonStyle())
-                .animation(.easeInOut(duration: 0.2), value: saved)
             }
         }
         .padding(16)
@@ -359,10 +516,31 @@ struct AccessSettingsView: View {
             launchAtLoginService.refresh()
             refreshInstallState()
             load()
-            if !appState.hasValue(for: .openAIAPIKey) {
+            if !isLocalEngine && !appState.hasValue(for: activeKey) {
                 editingAPIKey = true
                 focusedField = .openAIAPIKey
             }
+        }
+    }
+
+    private var keyHint: String {
+        switch activeProvider {
+        case .openai:
+            return "Dein Key bleibt lokal in dieser App. Audio und Text werden direkt an die OpenAI API gesendet."
+        case .scaleway:
+            return "Dein Key bleibt lokal in dieser App. Audio und Text werden direkt an die Scaleway API (api.scaleway.ai) gesendet."
+        case .custom:
+            return "Dein Key bleibt lokal in dieser App. Audio und Text werden direkt an deinen eingetragenen Endpoint gesendet."
+        }
+    }
+
+    @ViewBuilder
+    private func settingsTextField(label: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SectionLabel(text: label)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11.5))
         }
     }
 
@@ -374,27 +552,29 @@ struct AccessSettingsView: View {
         saveErrorText = nil
         cleanupStatusText = nil
         cleanupErrorText = nil
+        guard !isLocalEngine else { return }
         KeychainService.invalidateCache()
+        let key = activeKey
         let trimmedAPIKey = openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if editingAPIKey || !appState.hasValue(for: .openAIAPIKey) {
+        if editingAPIKey || !appState.hasValue(for: key) {
             guard !trimmedAPIKey.isEmpty else {
-                saveErrorText = "Bitte trage deinen OpenAI API Key ein."
+                saveErrorText = "Bitte trage deinen API-Key ein."
                 return
             }
             do {
-                try KeychainService.save(key: .openAIAPIKey, value: trimmedAPIKey)
+                try KeychainService.save(key: key, value: trimmedAPIKey)
                 openAIAPIKey = ""
                 editingAPIKey = false
             } catch {
-                saveErrorText = "OpenAI API Key konnte nicht gespeichert werden."
+                saveErrorText = "API-Key konnte nicht gespeichert werden."
                 return
             }
         }
 
         KeychainService.invalidateCache()
-        if !appState.hasValue(for: .openAIAPIKey) {
-            saveErrorText = "OpenAI API Key wurde nicht persistent gespeichert. Bitte App neu starten und erneut versuchen."
+        if !appState.hasValue(for: key) {
+            saveErrorText = "API-Key wurde nicht persistent gespeichert. Bitte App neu starten und erneut versuchen."
             return
         }
 
@@ -412,9 +592,17 @@ struct AccessSettingsView: View {
 
         let firstLine = rawText.components(separatedBy: .newlines).first ?? rawText
         let trimmedKey = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedKey.range(of: Self.openAIAPIKeyPattern, options: .regularExpression) != nil else {
-            saveErrorText = "Zwischenablage enthält keinen plausiblen OpenAI API Key."
-            return
+
+        if activeProvider == .openai {
+            guard trimmedKey.range(of: Self.openAIAPIKeyPattern, options: .regularExpression) != nil else {
+                saveErrorText = "Zwischenablage enthält keinen plausiblen OpenAI API Key."
+                return
+            }
+        } else {
+            guard !trimmedKey.isEmpty else {
+                saveErrorText = "Zwischenablage enthält keinen Text."
+                return
+            }
         }
 
         openAIAPIKey = trimmedKey
@@ -514,84 +702,8 @@ struct CustomizeSettingsView: View {
     @Bindable var appState: AppState
     @State private var newTerm = ""
 
-    private var installedLocalModels: [LocalTranscriptionModel] {
-        LocalTranscriptionService.installedModels()
-    }
-
-    private var localModelOptions: [LocalTranscriptionModel] {
-        LocalTranscriptionService.modelOptions()
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-
-            // MARK: Lokaler Modus
-            VStack(alignment: .leading, spacing: 10) {
-                SectionLabel(text: "Sicherer Lokaler Modus")
-
-                Toggle("Sicherer Lokaler Modus", isOn: $appState.appSettings.secureLocalModeEnabled)
-                    .toggleStyle(.switch)
-                    .onChange(of: appState.appSettings.secureLocalModeEnabled) { _, newValue in
-                        if newValue && !appState.selectedLocalModelIsInstalled {
-                            appState.installSelectedLocalModel()
-                        }
-                    }
-
-                HStack(spacing: 6) {
-                    Image(systemName: appState.selectedLocalModelIsInstalled ? "checkmark.circle.fill" : "arrow.down.circle.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(appState.selectedLocalModelIsInstalled ? .green : .blue)
-                    Text(appState.selectedLocalModelIsInstalled ? "\(installedLocalModels.count) lokales WhisperKit-Modell installiert." : "Das ausgewählte Modell wird beim Installieren lokal gespeichert.")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-
-                HStack(spacing: 8) {
-                    Text("Lokales Modell")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-
-                    Picker("", selection: Binding(
-                        get: { appState.selectedLocalModelName },
-                        set: { appState.appSettings.selectedLocalTranscriptionModelName = $0 }
-                    )) {
-                        ForEach(localModelOptions) { model in
-                            Text("\(model.displayName) · \(model.installStateLabel)").tag(model.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .disabled(appState.isDownloadingLocalModel)
-                }
-
-                if let progress = appState.localModelDownloadProgress {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ProgressView(value: progress)
-                        Text(appState.localModelDownloadStatusText ?? "Modell wird geladen...")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    HStack(spacing: 10) {
-                        Button(appState.localModelDownloadButtonTitle) {
-                            appState.installSelectedLocalModel()
-                        }
-                        .controlSize(.small)
-                        .disabled(appState.selectedLocalModelIsInstalled)
-
-                        Link("Modellseite", destination: LocalTranscriptionService.modelPageURL(for: appState.selectedLocalModelName))
-                            .font(.system(size: 10.5, weight: .medium))
-                    }
-                }
-
-                if let errorText = appState.localModelDownloadErrorText {
-                    Text(errorText)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
 
             // MARK: Tastenkuerzel
             VStack(alignment: .leading, spacing: 10) {

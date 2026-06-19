@@ -166,6 +166,119 @@ enum TranscriptionBackend: String, Codable {
     case local
 }
 
+// MARK: - API Provider
+
+enum APIProvider: String, Codable, CaseIterable, Identifiable {
+    case openai
+    case scaleway
+    case custom
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .openai: return "OpenAI"
+        case .scaleway: return "Scaleway"
+        case .custom: return "Eigener"
+        }
+    }
+}
+
+/// Resolved, immutable endpoint configuration handed to the services.
+/// URLs are optional because a custom provider may not have a base URL set yet.
+struct ProviderConfig {
+    let transcriptionsURL: URL?
+    let chatCompletionsURL: URL?
+    let transcriptionModel: String
+    let chatModelLight: String
+    let chatModelHeavy: String
+    let apiKey: String?
+}
+
+struct ProviderSettings: Codable {
+    var activeProvider: APIProvider = .openai
+    var scalewayChatModel: String = ""
+    var customBaseURL: String = ""
+    var customTranscriptionModel: String = ""
+    var customChatModel: String = ""
+
+    init(
+        activeProvider: APIProvider = .openai,
+        scalewayChatModel: String = "",
+        customBaseURL: String = "",
+        customTranscriptionModel: String = "",
+        customChatModel: String = ""
+    ) {
+        self.activeProvider = activeProvider
+        self.scalewayChatModel = scalewayChatModel
+        self.customBaseURL = customBaseURL
+        self.customTranscriptionModel = customTranscriptionModel
+        self.customChatModel = customChatModel
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case activeProvider
+        case scalewayChatModel
+        case customBaseURL
+        case customTranscriptionModel
+        case customChatModel
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        activeProvider = try container.decodeIfPresent(APIProvider.self, forKey: .activeProvider) ?? .openai
+        scalewayChatModel = try container.decodeIfPresent(String.self, forKey: .scalewayChatModel) ?? ""
+        customBaseURL = try container.decodeIfPresent(String.self, forKey: .customBaseURL) ?? ""
+        customTranscriptionModel = try container.decodeIfPresent(String.self, forKey: .customTranscriptionModel) ?? ""
+        customChatModel = try container.decodeIfPresent(String.self, forKey: .customChatModel) ?? ""
+    }
+
+    func resolvedConfig(apiKey: String?) -> ProviderConfig {
+        let baseURLString: String
+        let transcriptionModel: String
+        let chatModelLight: String
+        let chatModelHeavy: String
+
+        switch activeProvider {
+        case .openai:
+            baseURLString = "https://api.openai.com/v1"
+            transcriptionModel = "whisper-1"
+            chatModelLight = "gpt-4o-mini"
+            chatModelHeavy = "gpt-4o"
+        case .scaleway:
+            baseURLString = "https://api.scaleway.ai/v1"
+            transcriptionModel = "whisper-large-v3"
+            chatModelLight = scalewayChatModel
+            chatModelHeavy = scalewayChatModel
+        case .custom:
+            baseURLString = Self.normalizedBaseURL(customBaseURL)
+            transcriptionModel = customTranscriptionModel
+            chatModelLight = customChatModel
+            chatModelHeavy = customChatModel
+        }
+
+        let transcriptionsURL = baseURLString.isEmpty ? nil : URL(string: baseURLString + "/audio/transcriptions")
+        let chatCompletionsURL = baseURLString.isEmpty ? nil : URL(string: baseURLString + "/chat/completions")
+
+        return ProviderConfig(
+            transcriptionsURL: transcriptionsURL,
+            chatCompletionsURL: chatCompletionsURL,
+            transcriptionModel: transcriptionModel,
+            chatModelLight: chatModelLight,
+            chatModelHeavy: chatModelHeavy,
+            apiKey: apiKey
+        )
+    }
+
+    private static func normalizedBaseURL(_ raw: String) -> String {
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+        return trimmed
+    }
+}
+
 // MARK: - Workflow Settings
 
 struct TranscriptionSettings: Codable {

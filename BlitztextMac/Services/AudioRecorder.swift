@@ -15,7 +15,7 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
 
     private func makeRecordingURL() -> URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("blitztext-\(UUID().uuidString).m4a")
+            .appendingPathComponent("blitztext-\(UUID().uuidString).wav")
     }
 
     func startRecording() {
@@ -27,10 +27,12 @@ final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
         }
 
         let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVFormatIDKey: Int(kAudioFormatLinearPCM),
             AVSampleRateKey: 16000,
             AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
         ]
 
         do {

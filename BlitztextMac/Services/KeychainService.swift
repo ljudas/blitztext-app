@@ -3,10 +3,14 @@ import Security
 
 enum KeychainKey: String, CaseIterable, Codable {
     case openAIAPIKey = "openAIAPIKey"
+    case scalewayAPIKey = "scalewayAPIKey"
+    case customAPIKey = "customAPIKey"
 
     var label: String {
         switch self {
         case .openAIAPIKey: return "OpenAI API Key"
+        case .scalewayAPIKey: return "Scaleway API Key"
+        case .customAPIKey: return "API Key (Eigener)"
         }
     }
 }
@@ -68,6 +72,18 @@ enum KeychainService {
 
     static var isConfigured: Bool {
         load(key: .openAIAPIKey) != nil
+    }
+
+    static func key(for provider: APIProvider) -> KeychainKey {
+        switch provider {
+        case .openai: return .openAIAPIKey
+        case .scaleway: return .scalewayAPIKey
+        case .custom: return .customAPIKey
+        }
+    }
+
+    static func hasKey(for provider: APIProvider) -> Bool {
+        load(key: key(for: provider)) != nil
     }
 
     private static func baseQuery(for key: KeychainKey) -> [String: Any] {

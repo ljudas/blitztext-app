@@ -15,11 +15,13 @@ final class TextImprovementWorkflow: Workflow {
     private let recorder = AudioRecorder()
     private let settings: TextImprovementSettings
     private let language: String
+    private let config: ProviderConfig
     private var processingTask: Task<Void, Never>?
 
-    init(settings: TextImprovementSettings, language: String = "de") {
+    init(settings: TextImprovementSettings, language: String = "de", config: ProviderConfig) {
         self.settings = settings
         self.language = language
+        self.config = config
     }
 
     // MARK: - Recording State
@@ -83,6 +85,7 @@ final class TextImprovementWorkflow: Workflow {
                 // Phase 1: Whisper transcription
                 let rawText = try await TranscriptionService.transcribe(
                     audioURL: url,
+                    config: config,
                     customTerms: vocabularyHints,
                     language: language
                 )
@@ -99,7 +102,8 @@ final class TextImprovementWorkflow: Workflow {
 
                 let improved = try await LLMService.improve(
                     text: cleanedRawText,
-                    settings: settings
+                    settings: settings,
+                    config: config
                 )
 
                 let cleanedImproved = TranscriptionQualityService.cleanedTranscript(improved)
