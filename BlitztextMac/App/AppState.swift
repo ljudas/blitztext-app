@@ -40,6 +40,7 @@ final class AppState {
         didSet {
             saveSettings()
             prewarmLocalTranscriptionIfNeeded()
+            hotkeyService.bindings = resolvedHotkeyBindings
         }
     }
     var transcriptionSettings: TranscriptionSettings {
@@ -80,9 +81,32 @@ final class AppState {
         self.dampfAblassenSettings = Self.loadDampfAblassenSettings()
         self.emojiTextSettings = Self.loadEmojiTextSettings()
         self.providerSettings = Self.loadProviderSettings()
+        hotkeyService.bindings = resolvedHotkeyBindings
         refreshAccessibilityPermission()
         autoSelectFastLocalModelIfNeeded()
         prewarmLocalTranscriptionIfNeeded()
+    }
+
+    // MARK: - Hotkey Bindings
+
+    /// Belegung aus den Settings auf `WorkflowType` gemappt, fehlende Keys aus dem Default ergänzt.
+    var resolvedHotkeyBindings: [WorkflowType: HotkeyCombo] {
+        var result: [WorkflowType: HotkeyCombo] = [:]
+        for type in WorkflowType.allCases {
+            if let combo = appSettings.hotkeyBindings[type.rawValue]
+                ?? AppSettings.defaultHotkeyBindings[type.rawValue] {
+                result[type] = combo
+            }
+        }
+        return result
+    }
+
+    /// Label für Badge/Anzeige: Combo-Symbole oder "—" wenn ungültig/leer.
+    func hotkeyLabel(for type: WorkflowType) -> String {
+        guard let combo = appSettings.hotkeyBindings[type.rawValue], combo.isValid else {
+            return "\u{2014}"
+        }
+        return combo.label
     }
 
     // MARK: - Custom Display Names

@@ -28,6 +28,59 @@ enum HotkeyEvent {
     case cancel              // Escape pressed
 }
 
+// MARK: - Configurable Hotkey Combo
+
+enum HotkeyModifier: String, Codable, CaseIterable, Identifiable {
+    case function, control, option, shift, command   // Reihenfolge = Label-Reihenfolge
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .function: return "fn"
+        case .control: return "\u{2303}"   // ⌃
+        case .option: return "\u{2325}"    // ⌥
+        case .shift: return "\u{21E7}"     // ⇧
+        case .command: return "\u{2318}"   // ⌘
+        }
+    }
+
+    var eventFlag: NSEvent.ModifierFlags {
+        switch self {
+        case .function: return .function
+        case .control: return .control
+        case .option: return .option
+        case .shift: return .shift
+        case .command: return .command
+        }
+    }
+}
+
+struct HotkeyCombo: Codable, Equatable {
+    var modifiers: Set<HotkeyModifier>
+
+    /// Union der Modifier-Flags, gegen die `.flagsChanged` exakt verglichen wird.
+    var eventFlags: NSEvent.ModifierFlags {
+        modifiers.reduce(into: NSEvent.ModifierFlags()) { $0.insert($1.eventFlag) }
+    }
+
+    /// Symbole in `HotkeyModifier.allCases`-Reihenfolge, verbunden mit " + ".
+    var label: String {
+        HotkeyModifier.allCases
+            .filter { modifiers.contains($0) }
+            .map(\.symbol)
+            .joined(separator: " + ")
+    }
+
+    /// >= 2 Modifier, sonst zu leicht versehentlich auszulösen.
+    var isValid: Bool { modifiers.count >= 2 }
+
+    static func from(_ flags: NSEvent.ModifierFlags) -> HotkeyCombo {
+        let mods = HotkeyModifier.allCases.filter { flags.contains($0.eventFlag) }
+        return HotkeyCombo(modifiers: Set(mods))
+    }
+}
+
 @Observable
 @MainActor
 final class HotkeyService {
@@ -35,6 +88,9 @@ final class HotkeyService {
     private var localMonitor: Any?
     private var keyMonitor: Any?
     private var activeCombo: WorkflowType?  // Which combo is currently held
+
+    /// Konfigurierte Belegung, von AppState gesetzt.
+    var bindings: [WorkflowType: HotkeyCombo] = [:]
 
     var onHotkeyEvent: ((HotkeyEvent) -> Void)?
 
@@ -72,53 +128,17 @@ final class HotkeyService {
     private func handleFlags(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-        // fn + Shift + Control -> local transcription
-        if flags == [.function, .shift, .control] {
-            if activeCombo == nil {
-                activeCombo = .localTranscription
-                onHotkeyEvent?(.down(.localTranscription))
+        // No combo held yet -- start one if the flags match a configured, valid binding.
+        if activeCombo == nil {
+            if let match = bindings.first(where: { $0.value.isValid && $0.value.eventFlags == flags }) {
+                activeCombo = match.key
+                onHotkeyEvent?(.down(match.key))
             }
             return
         }
 
-        // fn + Shift -> transcription
-        if flags == [.function, .shift] {
-            if activeCombo == nil {
-                activeCombo = .transcription
-                onHotkeyEvent?(.down(.transcription))
-            }
-            return
-        }
-
-        // fn + Control -> Textverbesserer
-        if flags == [.function, .control] {
-            if activeCombo == nil {
-                activeCombo = .textImprover
-                onHotkeyEvent?(.down(.textImprover))
-            }
-            return
-        }
-
-        // fn + Option -> Rage Mode
-        if flags == [.function, .option] {
-            if activeCombo == nil {
-                activeCombo = .dampfAblassen
-                onHotkeyEvent?(.down(.dampfAblassen))
-            }
-            return
-        }
-
-        // fn + Command -> Emoji Mode
-        if flags == [.function, .command] {
-            if activeCombo == nil {
-                activeCombo = .emojiText
-                onHotkeyEvent?(.down(.emojiText))
-            }
-            return
-        }
-
-        // Keys released -- fire up event
-        if let combo = activeCombo {
+        // A combo is held -- once the flags diverge from its exact set, fire the release.
+        if let combo = activeCombo, flags != bindings[combo]?.eventFlags {
             activeCombo = nil
             onHotkeyEvent?(.up(combo))
         }

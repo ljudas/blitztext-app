@@ -45,16 +45,6 @@ enum WorkflowType: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    var hotkeyLabel: String {
-        switch self {
-        case .transcription: return "fn + Shift"
-        case .localTranscription: return "fn + Shift + Ctrl"
-        case .textImprover: return "fn + Control"
-        case .dampfAblassen: return "fn + Option"
-        case .emojiText: return "fn + Cmd"
-        }
-    }
-
     var accentColor: String {
         switch self {
         case .transcription: return "blue"
@@ -122,19 +112,33 @@ struct AppSettings: Codable {
     var secureLocalModeEnabled: Bool = false
     var selectedLocalTranscriptionModelName: String = LocalTranscriptionService.recommendedFastModelName
     var hasAutoSelectedFastLocalModel: Bool = false
+    var hotkeyBindings: [String: HotkeyCombo] = AppSettings.defaultHotkeyBindings
+
+    /// Werkseinstellung der Tastenbelegung (Key = `WorkflowType.rawValue`).
+    static var defaultHotkeyBindings: [String: HotkeyCombo] {
+        [
+            WorkflowType.transcription.rawValue: HotkeyCombo(modifiers: [.function, .shift]),
+            WorkflowType.localTranscription.rawValue: HotkeyCombo(modifiers: [.function, .shift, .control]),
+            WorkflowType.textImprover.rawValue: HotkeyCombo(modifiers: [.function, .control]),
+            WorkflowType.dampfAblassen.rawValue: HotkeyCombo(modifiers: [.function, .option]),
+            WorkflowType.emojiText.rawValue: HotkeyCombo(modifiers: [.function, .command]),
+        ]
+    }
 
     init(
         hotkeyMode: HotkeyMode = .hold,
         hasSeenOnboarding: Bool = false,
         secureLocalModeEnabled: Bool = false,
         selectedLocalTranscriptionModelName: String = LocalTranscriptionService.recommendedFastModelName,
-        hasAutoSelectedFastLocalModel: Bool = false
+        hasAutoSelectedFastLocalModel: Bool = false,
+        hotkeyBindings: [String: HotkeyCombo] = AppSettings.defaultHotkeyBindings
     ) {
         self.hotkeyMode = hotkeyMode
         self.hasSeenOnboarding = hasSeenOnboarding
         self.secureLocalModeEnabled = secureLocalModeEnabled
         self.selectedLocalTranscriptionModelName = selectedLocalTranscriptionModelName
         self.hasAutoSelectedFastLocalModel = hasAutoSelectedFastLocalModel
+        self.hotkeyBindings = hotkeyBindings
     }
 
     enum CodingKeys: String, CodingKey {
@@ -143,6 +147,7 @@ struct AppSettings: Codable {
         case secureLocalModeEnabled
         case selectedLocalTranscriptionModelName
         case hasAutoSelectedFastLocalModel
+        case hotkeyBindings
     }
 
     init(from decoder: Decoder) throws {
@@ -158,6 +163,10 @@ struct AppSettings: Codable {
             Bool.self,
             forKey: .hasAutoSelectedFastLocalModel
         ) ?? false
+        hotkeyBindings = try container.decodeIfPresent(
+            [String: HotkeyCombo].self,
+            forKey: .hotkeyBindings
+        ) ?? AppSettings.defaultHotkeyBindings
     }
 }
 

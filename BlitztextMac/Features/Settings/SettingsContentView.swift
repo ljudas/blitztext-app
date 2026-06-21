@@ -702,6 +702,51 @@ struct CustomizeSettingsView: View {
     @Bindable var appState: AppState
     @State private var newTerm = ""
 
+    // MARK: Hotkey editing helpers
+
+    private func combo(for type: WorkflowType) -> HotkeyCombo {
+        appState.appSettings.hotkeyBindings[type.rawValue] ?? HotkeyCombo(modifiers: [])
+    }
+
+    private func toggleModifier(_ modifier: HotkeyModifier, for type: WorkflowType) {
+        var current = combo(for: type)
+        if current.modifiers.contains(modifier) {
+            current.modifiers.remove(modifier)
+        } else {
+            current.modifiers.insert(modifier)
+        }
+        appState.appSettings.hotkeyBindings[type.rawValue] = current
+    }
+
+    /// Workflows, die sich eine identische gültige Combo teilen.
+    private var conflictingHotkeyTypes: Set<WorkflowType> {
+        var byModifiers: [Set<HotkeyModifier>: [WorkflowType]] = [:]
+        for type in WorkflowType.allCases {
+            let value = combo(for: type)
+            guard value.isValid else { continue }
+            byModifiers[value.modifiers, default: []].append(type)
+        }
+        var result: Set<WorkflowType> = []
+        for (_, types) in byModifiers where types.count > 1 {
+            result.formUnion(types)
+        }
+        return result
+    }
+
+    private func hotkeyStatus(for type: WorkflowType) -> (text: String, isError: Bool)? {
+        if conflictingHotkeyTypes.contains(type) {
+            return ("Bereits anders vergeben", true)
+        }
+        let value = combo(for: type)
+        if value.modifiers.isEmpty {
+            return ("Kein Hotkey", false)
+        }
+        if !value.isValid {
+            return ("Mindestens 2 Modifier n\u{00F6}tig", true)
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
 
@@ -709,18 +754,54 @@ struct CustomizeSettingsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel(text: "Tastenk\u{00FC}rzel")
 
-                VStack(spacing: 6) {
-                    ForEach(WorkflowType.mainMenuCases) { type in
-                        HStack {
-                            Text(type.hotkeyLabel)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 124, alignment: .leading)
-                            Text(appState.displayName(for: type))
-                                .font(.system(size: 11.5, weight: .medium))
-                            Spacer()
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(WorkflowType.allCases) { type in
+                        let current = combo(for: type)
+                        let status = hotkeyStatus(for: type)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(appState.displayName(for: type))
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .frame(width: 110, alignment: .leading)
+
+                                HStack(spacing: 4) {
+                                    ForEach(HotkeyModifier.allCases) { modifier in
+                                        let isOn = current.modifiers.contains(modifier)
+                                        Button {
+                                            toggleModifier(modifier, for: type)
+                                        } label: {
+                                            Text(modifier.symbol)
+                                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                                .frame(width: 26, height: 22)
+                                                .background(
+                                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                                        .fill(isOn ? Color.accentColor.opacity(0.85)
+                                                                   : Color.primary.opacity(0.06))
+                                                )
+                                                .foregroundStyle(isOn ? Color.white : Color.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+
+                                Spacer()
+                            }
+
+                            if let status {
+                                Text(status.text)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(status.isError ? Color.red : Color.secondary)
+                                    .padding(.leading, 118)
+                            }
                         }
                     }
+
+                    Button("Auf Standard zur\u{00FC}cksetzen") {
+                        appState.appSettings.hotkeyBindings = AppSettings.defaultHotkeyBindings
+                    }
+                    .font(.system(size: 11))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.blue)
                 }
 
                 // Mode picker
