@@ -14,6 +14,7 @@ enum PopoverPage: Equatable {
 final class AppState {
     private static let pasteRetryInitialAttempts = 22
     private static let concealedPasteboardType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    private static let clipboardRestoreDelay: TimeInterval = 0.4
 
     var activeWorkflow: (any Workflow)?
     var page: PopoverPage = .main
@@ -34,6 +35,9 @@ final class AppState {
     private var lastPopoverPasteTarget: PasteTarget?
     private var menuBarStatusResetTask: Task<Void, Never>?
     private var workflowCleanupTask: Task<Void, Never>?
+    private var clipboardBackup: [NSPasteboardItem]?
+    private var clipboardBackupChangeCount: Int?
+    private var pendingClipboardRestore: DispatchWorkItem?
 
     // Persisted settings
     var appSettings: AppSettings {
@@ -335,7 +339,13 @@ final class AppState {
     /// Copies the text, restores focus when needed, then simulates Cmd+V.
     /// The text intentionally remains on the clipboard as a fallback if paste is blocked.
     private func pasteAtCursor(_ text: String, target: PasteTarget? = nil) {
+        pendingClipboardRestore?.cancel()
+        pendingClipboardRestore = nil
+        if clipboardBackup == nil {
+            clipboardBackup = snapshotPasteboard()
+        }
         writeSensitiveTextToPasteboard(text)
+        clipboardBackupChangeCount = NSPasteboard.general.changeCount
 
         if isPopoverShown {
             NotificationCenter.default.post(name: .dismissPopover, object: nil)
@@ -345,6 +355,8 @@ final class AppState {
         accessibilityPermissionGranted = trusted
         guard trusted else {
             menuBarStatus = .error(activeWorkflow?.type)
+            clipboardBackup = nil
+            clipboardBackupChangeCount = nil
             return
         }
 
@@ -361,6 +373,47 @@ final class AppState {
         pasteboard.declareTypes([.string, Self.concealedPasteboardType], owner: nil)
         pasteboard.setString(text, forType: .string)
         pasteboard.setString("", forType: Self.concealedPasteboardType)
+    }
+
+    private func snapshotPasteboard() -> [NSPasteboardItem] {
+        guard let items = NSPasteboard.general.pasteboardItems else { return [] }
+
+        var snapshot: [NSPasteboardItem] = []
+        for item in items {
+            let copy = NSPasteboardItem()
+            var copiedType = false
+            for type in item.types {
+                guard let data = item.data(forType: type) else { continue }
+                copy.setData(data, forType: type)
+                copiedType = true
+            }
+            if copiedType {
+                snapshot.append(copy)
+            }
+        }
+        return snapshot
+    }
+
+    private func restorePasteboard(_ items: [NSPasteboardItem]) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard !items.isEmpty else { return }
+        pasteboard.writeObjects(items)
+    }
+
+    private func scheduleClipboardRestore() {
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if let backup = self.clipboardBackup,
+               NSPasteboard.general.changeCount == self.clipboardBackupChangeCount {
+                self.restorePasteboard(backup)
+            }
+            self.clipboardBackup = nil
+            self.clipboardBackupChangeCount = nil
+            self.pendingClipboardRestore = nil
+        }
+        pendingClipboardRestore = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clipboardRestoreDelay, execute: workItem)
     }
 
     func prepareForPopoverPresentation() {
@@ -585,15 +638,20 @@ final class AppState {
         if let target {
             if frontmostPid == target.processIdentifier {
                 performPaste()
+                scheduleClipboardRestore()
                 return
             }
 
             target.application.activate(options: [])
         } else {
+            clipboardBackup = nil
+            clipboardBackupChangeCount = nil
             return
         }
 
         guard attemptsRemaining > 0 else {
+            clipboardBackup = nil
+            clipboardBackupChangeCount = nil
             return
         }
 
