@@ -259,7 +259,8 @@ actor LocalTranscriptionService {
         let resolvedLanguage = language.trimmingCharacters(in: .whitespacesAndNewlines)
         let decodeOptions = DecodingOptions(
             task: .transcribe,
-            language: resolvedLanguage.isEmpty ? nil : resolvedLanguage
+            language: resolvedLanguage.isEmpty ? nil : resolvedLanguage,
+            withoutTimestamps: true
         )
 
         let pipeline = try await pipeline(modelName: modelName)
